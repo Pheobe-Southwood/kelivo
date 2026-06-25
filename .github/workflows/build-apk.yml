@@ -1,0 +1,105 @@
+name: 🏗️ 构建签名 APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: '发布到 Release'
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: 'Release 标签（如 v1.0.0）'
+        required: false
+        default: ''
+        type: string
+
+env:
+  FLUTTER_CHANNEL: 'stable'
+
+jobs:
+  android:
+    name: 构建签名 APK
+    runs-on: ubuntu-latest
+    permissions: write-all
+
+    steps:
+      - name: 📦 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ☕ 配置 Java 环境
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: 🐦 安装 Flutter (Stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+
+      - name: 📝 获取版本号
+        id: version
+        run: |
+          VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "版本号: $VERSION"
+
+      - name: 🔑 写入签名密钥
+        env:
+          SIGN_KEYSTORE_BASE64: ${{ secrets.SIGN_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$SIGN_KEYSTORE_BASE64" ]; then
+            echo "$SIGN_KEYSTORE_BASE64" | base64 --decode > android/app/key.jks
+            echo "storeFile=key.jks" >> android/key.properties
+            echo "storePassword=$KEYSTORE_PASSWORD" >> android/key.properties
+            echo "keyAlias=$KEY_ALIAS" >> android/key.properties
+            echo "keyPassword=$KEY_PASSWORD" >> android/key.properties
+            echo "✅ 签名配置已写入"
+          else
+            echo "⚠️ 未检测到签名密钥，将构建未签名 APK"
+          fi
+
+      - name: 🏗️ 构建 APK (Split per ABI)
+        run: flutter build apk --release --split-per-abi
+
+      - name: 📦 重命名 APK
+        run: |
+          cd build/app/outputs/flutter-apk
+          for file in app-*-release.apk; do
+            abi=$(echo "$file" | sed -E 's/app-(.*)-release\.apk/\1/')
+            mv "$file" "Kelivo_android_${VERSION}_${abi}.apk"
+          done
+
+      - name: 🚀 发布到 Release
+        if: ${{ github.event.inputs.publish_release == 'true' && github.event.inputs.release_tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          name: ${{ github.event.inputs.release_tag }}
+          files: build/app/outputs/flutter-apk/Kelivo_android_*.apk
+
+      - name: 📤 上传构建产物 (arm64-v8a)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-arm64-v8a
+          path: build/app/outputs/flutter-apk/Kelivo_android_*_arm64-v8a.apk
+
+      - name: 📤 上传构建产物 (armeabi-v7a)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-armeabi-v7a
+          path: build/app/outputs/flutter-apk/Kelivo_android_*_armeabi-v7a.apk
+
+      - name: 📤 上传构建产物 (x86_64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-x86_64
+          path: build/app/outputs/flutter-apk/Kelivo_android_*_x86_64.apk
